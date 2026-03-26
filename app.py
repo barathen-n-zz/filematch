@@ -97,7 +97,7 @@ class DataMatcher:
 # 界面布局
 # ===========================
 st.set_page_config(page_title="三表Excel生成器", layout="wide")
-st.title("📊 A+B+C三表一键生成工具（双密码权限版）")
+st.title("📊一键生成B数据表模版")
 
 # ===========================
 # 侧边栏：双密码权限控制
