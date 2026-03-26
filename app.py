@@ -7,11 +7,10 @@ import zipfile
 from datetime import datetime
 
 # ======================== 【双密码独立配置】 ========================
-LOGIN_PASSWORD = "123456"       # 普通用户登录密码
-ADMIN_PASSWORD = "888888"     # 管理员模板管理密码
+LOGIN_PASSWORD = "123123"
+ADMIN_PASSWORD = "666666"
 # ==================================================================
 
-# 系统登录校验
 def check_system_login():
     if "is_logged_in" not in st.session_state:
         st.session_state.is_logged_in = False
@@ -46,11 +45,11 @@ def read_excel(file):
     try:
         return pd.read_excel(file, engine="openpyxl", dtype=str)
     except:
-        st.error(f"文件读取失败：{file.name}，请检查文件格式！")
+        st.error(f"文件读取失败：{file.name}")
         return None
 
 # ===========================
-# B模板管理函数
+# B模板管理
 # ===========================
 def get_b_templates():
     return [f for f in os.listdir(TEMPLATE_FOLDER) if f.endswith((".xlsx", ".xls"))]
@@ -69,10 +68,9 @@ def delete_b_template(template_name):
         os.remove(map_path)
 
 # ===========================
-# 字段映射 保存/加载 + 【优化1：同名字段自动映射】
+# 【加固】自动映射 + 缺失列检测
 # ===========================
 def auto_map_columns(df_b, df_a):
-    """自动映射B模板和A表相同列名的字段"""
     auto_mapping = {}
     b_cols = list(df_b.columns)
     a_cols = list(df_a.columns)
@@ -81,13 +79,16 @@ def auto_map_columns(df_b, df_a):
             auto_mapping[col] = col
     return auto_mapping
 
+# 检测B模板中A表没有的列（友好提示）
+def check_missing_columns(df_b, df_a):
+    missing = [col for col in df_b.columns if col not in df_a.columns]
+    return missing
+
 def load_mapping(template_name, df_b, df_a):
-    """优先加载保存的映射，无则自动匹配同名列"""
     path = os.path.join(MAPPING_FOLDER, f"{template_name}.json")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    # 无保存映射 → 自动匹配同名列
     return auto_map_columns(df_b, df_a)
 
 def save_mapping(template_name, mapping):
@@ -95,7 +96,7 @@ def save_mapping(template_name, mapping):
         json.dump(mapping, f, ensure_ascii=False, indent=2)
 
 # ===========================
-# 三表匹配引擎
+# 【终极容错】三表匹配引擎
 # ===========================
 class DataMatcher:
     def __init__(self, df_a):
@@ -107,13 +108,14 @@ class DataMatcher:
 
     def fill_b_template(self, df_matched, df_b_template, mapping):
         df_b = df_b_template.copy().astype(str).apply(lambda x: x.str.strip())
+        # ✅ 核心容错：即使A表没有该列，也不报错，跳过填充
         for b_col, a_col in mapping.items():
             if b_col in df_b.columns and a_col in df_matched.columns:
                 df_b[b_col] = df_matched[a_col]
         return df_b
 
 # ===========================
-# 【优化2：批量生成打包ZIP】
+# 批量生成打包
 # ===========================
 def create_zip(files_data):
     zip_buffer = io.BytesIO()
@@ -124,24 +126,24 @@ def create_zip(files_data):
     return zip_buffer
 
 # ===========================
-# 界面布局
+# 界面
 # ===========================
 st.set_page_config(page_title="三表Excel生成器", layout="wide")
-st.title("📊 A+B+C三表一键生成工具（自动映射+批量版）")
+st.title("📊 批量一键智能VLOOKUP")
 
 # ===========================
-# 侧边栏：双密码权限控制
+# 侧边栏
 # ===========================
 with st.sidebar:
     st.header("1. B模板管理")
     admin_auth = False
     with st.expander("🔑 管理员操作（上传/删除模板）"):
-        admin_pwd = st.text_input("请输入管理员密码", type="password", key="admin")
+        admin_pwd = st.text_input("管理员密码", type="password")
         if admin_pwd == ADMIN_PASSWORD:
             admin_auth = True
             st.success("✅ 管理员已授权")
         elif admin_pwd:
-            st.error("❌ 管理员密码错误")
+            st.error("❌ 密码错误")
 
     template_list = get_b_templates()
     selected_b = None
@@ -149,7 +151,7 @@ with st.sidebar:
 
     if admin_auth:
         with st.expander("📤 上传新B模板"):
-            up_b = st.file_uploader("选择模板文件", type=['xlsx','xls'])
+            up_b = st.file_uploader("上传模板", type=['xlsx','xls'])
             if up_b and st.button("保存模板"):
                 save_b_template(up_b)
                 st.success("上传成功！")
@@ -167,15 +169,14 @@ with st.sidebar:
             selected_b = st.selectbox("选择B模板（单生成）", template_list)
             selected_b_list = st.multiselect("多选B模板（批量生成）", template_list)
         else:
-            st.info("暂无可用模板")
+            st.info("暂无模板")
 
     st.header("2. 数据上传")
     up_a = st.file_uploader("A表（总数据源）", type=['xlsx','xls'])
-    # 支持上传多个C表
-    up_c_list = st.file_uploader("C表（主键列表，可多选）", type=['xlsx','xls'], accept_multiple_files=True)
+    up_c_list = st.file_uploader("C表（可多选）", type=['xlsx','xls'], accept_multiple_files=True)
 
 # ===========================
-# 主功能区
+# 主功能
 # ===========================
 if up_a and up_c_list:
     df_a = read_excel(up_a)
@@ -191,6 +192,11 @@ if up_a and up_c_list:
         if df_c is None or df_b is None:
             st.stop()
 
+        # ✅ 检测缺失列（智能提示）
+        missing_cols = check_missing_columns(df_b, df_a)
+        if missing_cols:
+            st.warning(f"⚠️ B模板中有 {len(missing_cols)} 列在A表中不存在，将保留为空：\n{', '.join(missing_cols)}")
+
         col1, col2, col3 = st.columns(3)
         with col1: st.subheader("A表"); st.dataframe(df_a.head(3), use_container_width=True)
         with col2: st.subheader("C表"); st.dataframe(df_c.head(3), use_container_width=True)
@@ -203,8 +209,7 @@ if up_a and up_c_list:
         key_c = st.selectbox("C表主键", df_c.columns)
         key_a = st.selectbox("A表对应主键", df_a.columns)
 
-        # 自动映射字段
-        st.subheader("🔗 字段映射（自动匹配同名列+可修改）")
+        st.subheader("🔗 字段映射（自动匹配）")
         saved_map = load_mapping(selected_b, df_b, df_a)
         current_map = {}
 
@@ -223,19 +228,19 @@ if up_a and up_c_list:
         with col_save:
             if st.button("💾 保存当前映射"):
                 save_mapping(selected_b, current_map)
-                st.success("映射已永久保存！")
+                st.success("映射已保存！")
         with col_gen:
-            start_gen = st.button("🚀 一键生成表格", type="primary")
+            start_gen = st.button("🚀 一键生成", type="primary")
 
         if start_gen:
             bar = st.progress(0)
             text = st.empty()
 
-            text.text("步骤1：C表匹配A表数据")
+            text.text("匹配C→A数据...")
             bar.progress(30)
             matched = matcher.match_c_to_a(df_c, key_c, key_a)
 
-            text.text("步骤2：填充数据到B模板")
+            text.text("填充B模板...")
             bar.progress(70)
             result = matcher.fill_b_template(matched, df_b, current_map)
 
@@ -249,61 +254,54 @@ if up_a and up_c_list:
             st.download_button("📥 下载结果", out.getvalue(), f"结果_{selected_b}")
 
     # --------------------
-    # 【优化2：批量生成（核心）】
+    # 批量生成
     # --------------------
     if selected_b_list and len(up_c_list) > 0:
         st.divider()
-        st.subheader("🚀 批量生成模式（一键生成所有模板+对应C表）")
-        st.info(f"已选 {len(selected_b_list)} 个B模板 | 已上传 {len(up_c_list)} 个C表\n✅ 程序将自动按顺序匹配：模板1→C表1，模板2→C表2...")
+        st.subheader("📦 批量生成模式")
+        key_c = st.text_input("C表统一主键", value="订单编号")
+        key_a = st.selectbox("A表对应主键", df_a.columns)
 
-        key_c = st.text_input("C表统一主键列名", value="订单编号", help="所有C表的主键列名必须一致")
-        key_a = st.selectbox("A表对应主键列", df_a.columns)
-
-        if st.button("✅ 一键批量生成并打包下载", type="primary"):
+        if st.button("✅ 一键批量生成+打包", type="primary"):
             matcher = DataMatcher(df_a)
             bar = st.progress(0)
             status = st.empty()
             files_data = {}
-
-            # 循环批量生成
             total = len(selected_b_list)
+
             for idx, (b_file, c_file) in enumerate(zip(selected_b_list, up_c_list)):
                 progress = int((idx+1)/total * 100)
-                status.text(f"正在生成：{b_file} → {c_file.name}")
+                status.text(f"生成中：{b_file}")
                 bar.progress(progress)
 
-                # 读取文件
                 df_c = read_excel(c_file)
                 df_b = read_excel(os.path.join(TEMPLATE_FOLDER, b_file))
                 if df_c is None or df_b is None:
                     continue
 
-                # 加载映射+生成
                 mapping = load_mapping(b_file, df_b, df_a)
                 matched = matcher.match_c_to_a(df_c, key_c, key_a)
                 result = matcher.fill_b_template(matched, df_b, mapping)
 
-                # 写入内存
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine="openpyxl") as w:
                     result.to_excel(w, index=False)
-                files_data[f"结果_{b_file}_{c_file.name}"] = out.getvalue()
+                files_data[f"结果_{b_file}"] = out.getvalue()
 
-            # 打包ZIP
             zip_file = create_zip(files_data)
             bar.progress(100)
             status.text("✅ 全部生成完成！")
-            st.success(f"成功生成 {len(files_data)} 个文件")
+            st.success(f"共生成 {len(files_data)} 个文件")
             st.download_button(
-                "📦 下载全部文件(ZIP)",
+                "📦 下载ZIP",
                 zip_file,
-                f"批量生成结果_{datetime.now().strftime('%Y%m%d%H%M')}.zip"
+                f"批量结果_{datetime.now().strftime('%Y%m%d%H%M')}.zip"
             )
 
 else:
     st.info("""
-    🎯 新功能说明：
-    1. 🚀 自动映射：B/A表同名列自动绑定，不用手动配置
-    2. 📦 批量生成：多选B模板+上传多个C表，一键生成所有文件
-    3. 🔐 双密码：登录密码（使用）/管理员密码（配置模板）
+    ✅ 终极保障：
+    1. B模板列在A表不存在 → **不报错、不崩溃**
+    2. 自动提示缺失列，该列保留空白
+    3. 支持自动映射 + 批量生成 + 双密码权限
     """)
